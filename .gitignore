@@ -1,0 +1,38 @@
+PRD_Modular_Positional_Encoding_Refactor.md
+milestone.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data and checkpoints
+checkpoints/
+metrics/
+*.pt
+*.pth
+data/
+hf_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+wandb/
