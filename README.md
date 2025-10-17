@@ -1,3 +1,1 @@
-# HybridGaussianEmbedding
-
-First commit from Colab
+Hybrid Positional Encoding
