@@ -51,7 +51,7 @@ class RoBERTaEncoder(nn.Module):
                 - cls_embeddings: Stacked CLS token embeddings
                 - attentions: Attention weights from all layers
         """
-        input_embeddings = input_embeddings.to(dtype=torch.float32)
+        input_embeddings = input_embeddings.to(dtype=torch.float32)  # Ensure consistent dtype
         input_embeddings = input_embeddings.to(self.model.device)
         attention_mask = attention_mask.to(self.model.device)
 
