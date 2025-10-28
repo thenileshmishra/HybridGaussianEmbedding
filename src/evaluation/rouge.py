@@ -58,7 +58,7 @@ def compute_rouge(sys_summary, gold_summary, rouge1_results, rouge2_results,
     return rouge1_results, rouge2_results, rougeL_results, rougeLsum_results
 
 
-def init_rouge_results():
+def init_rouge_results():  # Factory for metric accumulators
     """Initialize empty ROUGE result accumulators.
 
     Returns:
