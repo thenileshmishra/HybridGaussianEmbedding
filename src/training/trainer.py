@@ -158,7 +158,7 @@ def train(train_loader, val_loader, config):
 
                 optimizer.zero_grad()
 
-                # Forward pass
+                # Forward pass through encoder pipeline
                 cls_embeddings, _ = roberta_model(embeddings, cls_indices_tensor, attention_mask)
                 cls_reshaped = cls_embeddings.permute(1, 0, 2)
                 result, cls_idx, x = interencoder(cls_reshaped, attention_mask, cls_indices_tensor, d)
