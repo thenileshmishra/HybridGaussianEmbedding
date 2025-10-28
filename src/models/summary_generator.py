@@ -32,7 +32,7 @@ class SummaryGenerator(nn.Module):
         actual_sentences = [s for s in input_text if s.strip() != ""]
         actual_len = len(actual_sentences)
 
-        if actual_len == 0:
+        if actual_len == 0:  # Guard for empty documents
             return ""
 
         # Trim scores to actual number of sentences
