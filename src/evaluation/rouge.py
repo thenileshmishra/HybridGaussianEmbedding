@@ -69,7 +69,7 @@ def init_rouge_results():  # Factory for metric accumulators
     return _empty(), _empty(), _empty(), _empty()
 
 
-def average_rouge(results: dict) -> float:
+def average_rouge(results: dict) -> float:  # Centralized metric avg
     """Compute average F-measure from accumulated results.
 
     Args:
