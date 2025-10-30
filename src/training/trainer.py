@@ -45,7 +45,7 @@ def train(train_loader, val_loader, config):
     dropout = config.dropout
 
     best_val_rougeL = -1
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    os.makedirs(config.checkpoint_dir, exist_ok=True)  # Ensure dirs exist
     os.makedirs(config.metrics_dir, exist_ok=True)
     save_path = os.path.join(config.checkpoint_dir, f"roberta_epoch{config.num_epochs}.pth")
     resume_doc_idx = 0
