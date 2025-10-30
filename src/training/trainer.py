@@ -71,7 +71,7 @@ def train(train_loader, val_loader, config):
     interencoder.to(device)
     logit_layer.to(device)
 
-    # Optimizer, scheduler, loss
+    # Optimizer (AdamW), scheduler (StepLR), loss (BCEWithLogitsLoss)
     optimizer = optim.AdamW(
         list(roberta_model.parameters()) + list(logit_layer.parameters()),
         lr=config.learning_rate,
