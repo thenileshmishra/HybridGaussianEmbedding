@@ -55,7 +55,7 @@ def get_gaussian_encoding(
     if mu is None:
         mu = np.linspace(0, seq_len - 1, d)
 
-    start = max(0, int(mu - sigma))
+    start = max(0, int(mu - sigma))  # Clamp to valid range
     end = min(seq_len, int(mu + sigma))
 
     # Linear scaling ensures balanced local-global representation
