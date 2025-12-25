@@ -1,0 +1,6 @@
+name: model_native
+type: none
+description: >
+  Use the model's built-in positional encoding without any modification.
+  RoBERTa uses learned absolute embeddings, DeBERTa uses disentangled
+  relative encoding, Longformer uses learned absolute with sparse attention.

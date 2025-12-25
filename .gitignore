@@ -1,39 +1,36 @@
-PRD_Modular_Positional_Encoding_Refactor.md
-milestone.md
-
-# Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
+.eggs/
 dist/
 build/
-*.egg
 
-# Virtual environments
+# Environments
 .venv/
 venv/
 env/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
 
-# Data and checkpoints
-checkpoints/
-metrics/
+# MLflow
+mlruns/
+mlartifacts/
+
+# Outputs and checkpoints
+outputs/
+logs/
 *.pt
 *.pth
-data/
-hf_cache/
+*.ckpt
 
-# OS
+# Configs with secrets
+.env
+
+# macOS
 .DS_Store
-Thumbs.db
 
-# Logs
-*.log
-wandb/
-.claude/
+# IDE
+.vscode/
+.idea/
