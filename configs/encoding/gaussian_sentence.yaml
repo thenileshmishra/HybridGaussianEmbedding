@@ -1,9 +1,0 @@
-name: gaussian_sentence_aware
-type: attention_bias_sentence
-sigma_init: 1.5
-learnable: true
-per_head: true
-description: >
-  Sentence-aware Gaussian bias using sentence-index distance.
-  G(s_i - s_j) = -(s_i - s_j)^2 / (2 * sigma^2).
-  Requires a precomputed sentence_map (batch, seq_len) of integer indices.

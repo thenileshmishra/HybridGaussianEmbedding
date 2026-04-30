@@ -1,7 +1,0 @@
-name: gaussian_relative
-type: attention_bias
-sigma: 3.0
-learnable: false
-description: >
-  Fixed-sigma Gaussian relative positional bias added to attention scores
-  before softmax. G(i-j) = -(i-j)^2 / (2 * sigma^2).

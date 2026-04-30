@@ -1,9 +1,0 @@
-name: gaussian_relative_learnable
-type: attention_bias
-sigma_init: 3.0
-learnable: true
-per_head: true
-description: >
-  Learnable per-head sigma Gaussian relative positional bias.
-  sigma_h is a separate nn.Parameter for each attention head,
-  parameterised as exp(log_sigma) to ensure positivity.
