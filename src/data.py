@@ -1,5 +1,5 @@
 """
-Day 1 Morning — CNN/DailyMail data pipeline.
+CNN/DailyMail data pipeline.
 
 Loads CNN/DM, takes a 1000-doc stratified sample by sentence count, splits
 64/16/20 into train/val/test, sentence-splits each article and reference
@@ -27,6 +27,8 @@ import torch
 from datasets import load_dataset
 import nltk
 from nltk.tokenize import sent_tokenize
+from rouge_score import rouge_scorer
+from tqdm import tqdm
 from transformers import RobertaTokenizerFast
 
 
@@ -84,6 +86,30 @@ def split_indices(n, train_n, val_n, seed):
 
 def split_sents(text, cap):
     return sent_tokenize(text)[:cap]
+
+
+def create_oracle_labels(article_sents, summary_sents):
+    """
+    BERTSum-standard oracle extractive labels.
+
+    For each reference summary sentence, pick the top-3 source sentences by
+    average of ROUGE-1, ROUGE-2, ROUGE-L F-measure. Mark those source
+    sentences as 1, rest as 0. This binary vector is the BCE training target.
+    """
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'])
+    labels = [0] * len(article_sents)
+    for ref in summary_sents:
+        scores = []
+        for src in article_sents:
+            s = scorer.score(src, ref)
+            avg_f = (s['rouge1'].fmeasure
+                     + s['rouge2'].fmeasure
+                     + s['rougeL'].fmeasure) / 3.0
+            scores.append(avg_f)
+        top3 = sorted(range(len(scores)), key=lambda i: -scores[i])[:3]
+        for i in top3:
+            labels[i] = 1
+    return labels
 
 
 def format_bertsum(sentences, tokenizer, max_len=512):
@@ -157,7 +183,7 @@ def main():
     art_lens = [len(s) for s in articles_sents]
     print(f'      article sents: mean={np.mean(art_lens):.1f}  max={max(art_lens)}')
 
-    print('\n[5/6] Verifying BERTSum formatter with RoBERTa tokenizer...')
+    print('\n[5/7] Verifying BERTSum formatter with RoBERTa tokenizer...')
     tok = RobertaTokenizerFast.from_pretrained('roberta-base')
     demo = format_bertsum(articles_sents[0], tok, max_len=512)
     for p in demo['cls_positions']:
@@ -165,10 +191,20 @@ def main():
     print(f'      OK - encoded {len(demo["cls_positions"])} sentences into '
           f'{len(demo["input_ids"])} tokens')
 
-    print('\n[6/6] Saving cache...')
+    print('\n[6/7] Building oracle extractive labels (top-3 ROUGE)...')
+    oracle_labels = [
+        create_oracle_labels(a, s)
+        for a, s in tqdm(list(zip(articles_sents, summaries_sents)),
+                         total=SAMPLE_SIZE)
+    ]
+    pos_rate = np.mean([sum(lbl) / max(len(lbl), 1) for lbl in oracle_labels])
+    print(f'      mean positive rate per doc: {pos_rate:.3f}')
+
+    print('\n[7/7] Saving cache...')
     data = {
         'articles_sents':  articles_sents,
         'summaries_sents': summaries_sents,
+        'oracle_labels':   oracle_labels,
         'train_idx':       train_idx,
         'val_idx':         val_idx,
         'test_idx':        test_idx,
@@ -185,14 +221,17 @@ def main():
     print('\n--- Verify ---')
     reloaded = torch.load(save_path, weights_only=False)
     doc_id = reloaded['train_idx'][0]
-    print(f'Train doc #{doc_id} ({len(reloaded["articles_sents"][doc_id])} sentences):')
-    for i, s in enumerate(reloaded['articles_sents'][doc_id][:3]):
-        print(f'  S{i}: {s[:100]}')
+    sents = reloaded['articles_sents'][doc_id]
+    labels = reloaded['oracle_labels'][doc_id]
+    print(f'Train doc #{doc_id}  (sentences={len(sents)}  positives={sum(labels)})')
+    for i, (s, lbl) in enumerate(zip(sents, labels)):
+        marker = '[+]' if lbl else '   '
+        print(f'  {marker} S{i:02d}: {s[:90]}')
     print(f'\nReference summary ({len(reloaded["summaries_sents"][doc_id])} sentences):')
     for i, s in enumerate(reloaded['summaries_sents'][doc_id]):
         print(f'  S{i}: {s}')
 
-    print('\n[done] Day 1 morning complete.')
+    print('\n[done] Day 1 complete.')
 
 
 if __name__ == '__main__':
