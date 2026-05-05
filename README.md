@@ -1,132 +1,100 @@
-# Modular Positional Encoding Framework
-### Learnable Gaussian Relative Bias for Extractive Summarization
+# Hybrid Gaussian Positional Embedding for Extractive Summarization
 
-> Thesis research by **Nilesh Mishra**
-
----
-
-## Research Objective
-
-Evaluate whether a **learnable Gaussian relative positional bias** injected
-directly into the attention mechanism improves extractive summarization by
-modelling locality more effectively than standard absolute or relative encodings.
-
-Core hypothesis:
-
-```
-Attention(Q, K, V) = Softmax((QK^T / √d) + G(i − j)) V
-
-G(i − j) = −(i − j)² / (2 σ²)          # fixed σ variant
-G_h(i − j) = −(i − j)² / (2 σ_h²)      # learnable per-head σ
-```
+Thesis research by **Nilesh Mishra**
 
 ---
 
-## Directory Structure
+## What this project does
+
+Implements and evaluates a **learnable Gaussian sentence-position bias** for BERTSum-style extractive summarization. The bias is injected at the sentence-level CLS embeddings before the inter-sentence transformer, allowing the model to learn *which region of a document* typically contains the most important sentences.
+
+**Gaussian formula:**
 
 ```
-.
-├── configs/
-│   ├── model/          roberta.yaml · deberta.yaml · longformer.yaml
-│   ├── encoding/       model_native · gaussian_relative · gaussian_learnable · gaussian_sentence
-│   └── dataset/        cnndm.yaml · gigaword.yaml · xsum.yaml
-│
-├── src/
-│   ├── models/
-│   │   ├── base_adapter.py          ← PositionalBiasAdapter ABC
-│   │   ├── roberta_adapter.py       ← BiasSelfAttention + RoBERTaWithBias
-│   │   ├── deberta_adapter.py       ← BiasedDisentangledSelfAttention + DeBERTaWithBias
-│   │   └── longformer_adapter.py    ← BiasedLongformerSelfAttention + LongformerWithBias
-│   │
-│   ├── positional_bias/
-│   │   ├── gaussian_relative.py     ← fixed σ
-│   │   ├── gaussian_learnable.py    ← learnable per-head σ
-│   │   └── sentence_aware.py        ← sentence-index distance bias
-│   │
-│   ├── runner/
-│   │   ├── experiment.py            ← CLI entry-point + MLflow orchestration
-│   │   ├── train.py                 ← training loop + checkpointing
-│   │   └── evaluate.py              ← ROUGE + BERTScore evaluation
-│   │
-│   └── analysis/
-│       ├── sigma_analysis.py        ← learned σ distribution plots
-│       ├── attention_visualization.py ← attention heatmaps
-│       └── stats_tests.py           ← paired t-test + bootstrap CI
-│
-├── logs/               (MLflow local store)
-├── outputs/            (per-run artefacts)
-├── notebooks/          (exploration notebooks)
-├── run_experiment.sh   ← example sweep commands
-└── requirements.txt
+G(i) = exp( -(i_norm - μ)² / (2σ²) )
+h_i  = h_i + α · G(i)
+```
+
+where `i_norm = i / (N-1)` normalizes sentence index to [0, 1], and μ, σ, α are either fixed (G1) or learned end-to-end (G2).
+
+---
+
+## Repository structure
+
+```
+src/
+  data.py      — CNN/DM and XSum data pipeline, oracle label generation
+  model.py     — BERTSumExt with GaussianBias module (G0–G4 variants)
+  train.py     — Training loop, evaluation, checkpoint saving
+  stats.py     — Paired t-test + bootstrap CI on per-document ROUGE
+  analyze.py   — Four analysis figures from experiment logs
+requirements.txt
 ```
 
 ---
 
-## Encoding Variants
+## Variants
 
-| Name | Type | Description |
-|------|------|-------------|
-| `model_native` | — | Unmodified model-native encoding |
-| `gaussian_relative` | attention bias | Fixed σ Gaussian relative bias |
-| `gaussian_relative_learnable` | attention bias | Per-head learnable σ |
-| `gaussian_sentence_aware` | attention bias | Learnable σ over sentence-index distance |
-
----
-
-## Quick Start
-
-```bash
-pip install -r requirements.txt
-
-# Single run
-python -m src.runner.experiment \
-    --model   roberta \
-    --encoding gaussian_relative_learnable \
-    --dataset  cnndm \
-    --seed     42
-
-# Full sweep
-bash run_experiment.sh
-
-# View MLflow dashboard
-mlflow ui --port 5000
-```
+| Variant | What's learned | Description |
+|---------|---------------|-------------|
+| G0 | nothing | Sinusoidal sentence PE only (baseline) |
+| G1 | nothing | Fixed Gaussian scalar (μ=0.5, σ=0.2, α=1.0) |
+| G2 | μ, σ, α | Learnable scalar Gaussian — **best variant** |
+| G3 | vector w | Fixed μ/σ, learnable per-dimension weight |
+| G4 | μ, σ, w | Fully learnable Gaussian with vector weight |
 
 ---
 
-## Experiment Matrix
+## Datasets
 
-| Model | model_native | gaussian_rel | learnable_σ | sentence_aware |
-|-------|:---:|:---:|:---:|:---:|
-| RoBERTa   | ✓ | ✓ | ✓ | ✓ |
-| DeBERTa   | ✓ | ✓ | ✓ | ✓ |
-| Longformer| ✓ | ✓ | ✓ | ✓ |
-
-Datasets: **CNN/DM** · **Gigaword** · **XSum**
+| Dataset | Docs sampled | Split | Style |
+|---------|-------------|-------|-------|
+| CNN/DailyMail | 999 | 640/160/199 | Multi-sentence extractive |
+| XSum | 1000 | 640/160/200 | Single-sentence abstractive |
 
 ---
 
-## Adapter Contract
+## Results (RoBERTa-base, CNN/DM, 3 epochs)
 
-Every encoding variant must subclass `PositionalBiasAdapter` and implement:
+| Variant | ROUGE-1 | ROUGE-2 | ROUGE-L |
+|---------|---------|---------|---------|
+| G0 | 0.3694 | 0.1659 | 0.2457 |
+| G1 | 0.3692 | 0.1660 | 0.2470 |
+| **G2** | **0.3715** | **0.1662** | **0.2472** |
+| G3 | 0.3682 | 0.1651 | 0.2455 |
+| G4 | 0.3686 | 0.1656 | 0.2462 |
+
+G2 learned μ=0.525 (slightly past document midpoint) and σ=0.12 (narrower than init), showing the model learns CNN/DM document structure.
+
+---
+
+## How to run (Google Colab)
 
 ```python
-def inject_attention_bias(
-    self,
-    attention_scores: Tensor,   # (batch, heads, seq, seq)
-    sentence_map: Tensor | None # (batch, seq)  — sentence indices
-) -> Tensor:
-    ...
-```
+# Step 1 — mount Drive and clone
+from google.colab import drive
+drive.mount('/content/drive')
+!git clone https://github.com/thenileshmishra/HybridGaussianEmbedding.git
+%cd HybridGaussianEmbedding
+!pip install -q rouge-score bert-score datasets nltk sentencepiece
 
-The bias is injected **before softmax** inside the attention forward of each
-wrapped model (RoBERTa → `BiasSelfAttention`, DeBERTa → `BiasedDisentangledSelfAttention`).
+# Step 2 — build data cache
+!python src/data.py --dataset cnndm
+!python src/data.py --dataset xsum
+
+# Step 3 — train variants
+!python src/train.py --backbone roberta-base --variant G0 --epochs 3
+!python src/train.py --backbone roberta-base --variant G2 --epochs 3
+
+# Step 4 — statistical significance
+!python src/stats.py --a G0_roberta-base --b G2_roberta-base
+
+# Step 5 — generate figures
+!python src/analyze.py --log_dir /content/drive/MyDrive/GaussianBERTSum/logs
+```
 
 ---
 
-## Reproducibility
+## Key finding
 
-Every run:
-1. Calls `set_seed(args.seed)` (Python · NumPy · PyTorch · CUDA).
-2. Saves a full `config_snapshot.yaml` as an MLflow artefact.
-3. Logs all hyperparameters under `mlflow.log_params`.
+G2's learnable Gaussian provides consistent improvement on RoBERTa (absolute PE). It does **not** help on DeBERTa, which already encodes relative position inside every attention head — confirming the Gaussian fills a gap rather than adding noise when backbone PE is limited.

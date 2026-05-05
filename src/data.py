@@ -21,6 +21,7 @@ Output:
 import os
 import re
 import random
+import argparse
 import numpy as np
 import pandas as pd
 import torch
@@ -148,6 +149,11 @@ def format_bertsum(sentences, tokenizer, max_len=512):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', default='cnndm', choices=['cnndm', 'xsum'],
+                        help='Dataset to process: cnndm or xsum')
+    args = parser.parse_args()
+
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -157,34 +163,42 @@ def main():
 
     save_dir = setup_save_dir()
     os.makedirs(save_dir, exist_ok=True)
-    print(f'Save dir: {save_dir}')
+    print(f'Save dir: {save_dir}  dataset: {args.dataset}')
 
-    print('\n[1/6] Loading CNN/DailyMail 3.0.0 train split...')
-    ds = load_dataset('cnn_dailymail', '3.0.0', split='train')
-    articles = ds['article']
-    summaries = ds['highlights']
+    if args.dataset == 'cnndm':
+        print('\n[1/7] Loading CNN/DailyMail 3.0.0 train split...')
+        ds = load_dataset('cnn_dailymail', '3.0.0', split='train')
+        articles  = ds['article']
+        summaries = ds['highlights']
+        source_tag = 'cnn_dailymail/3.0.0'
+    else:
+        print('\n[1/7] Loading XSum train split...')
+        ds = load_dataset('xsum', split='train')
+        articles  = ds['document']
+        summaries = ds['summary']
+        source_tag = 'xsum'
     print(f'      {len(articles)} train docs')
 
-    print('\n[2/6] Stratified sampling 1000 docs...')
+    print('\n[2/7] Stratified sampling 1000 docs...')
     sampled_idx = stratified_sample(articles, SAMPLE_SIZE, SEED)
-    sampled_articles = [articles[i] for i in sampled_idx]
+    sampled_articles  = [articles[i]  for i in sampled_idx]
     sampled_summaries = [summaries[i] for i in sampled_idx]
     actual_n = len(sampled_idx)
     print(f'      sampled {actual_n} docs')
 
     test_n = actual_n - TRAIN_SIZE - VAL_SIZE
-    print(f'\n[3/6] Splitting {TRAIN_SIZE}/{VAL_SIZE}/{test_n}...')
+    print(f'\n[3/7] Splitting {TRAIN_SIZE}/{VAL_SIZE}/{test_n}...')
     train_idx, val_idx, test_idx = split_indices(actual_n, TRAIN_SIZE, VAL_SIZE, SEED)
     print(f'      train={len(train_idx)}  val={len(val_idx)}  test={len(test_idx)}')
 
     print(f'\n[4/7] Sentence-splitting (cap at {MAX_SENTS} sentences)...')
-    articles_sents = [split_sents(a, MAX_SENTS) for a in sampled_articles]
+    articles_sents  = [split_sents(a, MAX_SENTS) for a in sampled_articles]
     summaries_sents = [split_sents(s, MAX_SENTS) for s in sampled_summaries]
     art_lens = [len(s) for s in articles_sents]
     print(f'      article sents: mean={np.mean(art_lens):.1f}  max={max(art_lens)}')
 
     print('\n[5/7] Verifying BERTSum formatter with RoBERTa tokenizer...')
-    tok = RobertaTokenizerFast.from_pretrained('roberta-base')
+    tok  = RobertaTokenizerFast.from_pretrained('roberta-base')
     demo = format_bertsum(articles_sents[0], tok, max_len=512)
     for p in demo['cls_positions']:
         assert demo['input_ids'][p] == tok.cls_token_id
@@ -194,8 +208,7 @@ def main():
     print('\n[6/7] Building oracle extractive labels (top-3 ROUGE)...')
     oracle_labels = [
         create_oracle_labels(a, s)
-        for a, s in tqdm(list(zip(articles_sents, summaries_sents)),
-                         total=actual_n)
+        for a, s in tqdm(list(zip(articles_sents, summaries_sents)), total=actual_n)
     ]
     pos_rate = np.mean([sum(lbl) / max(len(lbl), 1) for lbl in oracle_labels])
     print(f'      mean positive rate per doc: {pos_rate:.3f}')
@@ -211,9 +224,9 @@ def main():
         'sample_size':     actual_n,
         'max_sents':       MAX_SENTS,
         'seed':            SEED,
-        'source_dataset':  'cnn_dailymail/3.0.0',
+        'source_dataset':  source_tag,
     }
-    save_path = os.path.join(save_dir, 'cnndm_1000.pt')
+    save_path = os.path.join(save_dir, f'{args.dataset}_1000.pt')
     torch.save(data, save_path)
     print(f'      saved -> {save_path}')
     print(f'      size: {os.path.getsize(save_path) / 1024:.1f} KB')
@@ -221,7 +234,7 @@ def main():
     print('\n--- Verify ---')
     reloaded = torch.load(save_path, weights_only=False)
     doc_id = reloaded['train_idx'][0]
-    sents = reloaded['articles_sents'][doc_id]
+    sents  = reloaded['articles_sents'][doc_id]
     labels = reloaded['oracle_labels'][doc_id]
     print(f'Train doc #{doc_id}  (sentences={len(sents)}  positives={sum(labels)})')
     for i, (s, lbl) in enumerate(zip(sents, labels)):
@@ -231,7 +244,7 @@ def main():
     for i, s in enumerate(reloaded['summaries_sents'][doc_id]):
         print(f'  S{i}: {s}')
 
-    print('\n[done] Data Part is completed.')
+    print(f'\n[done] {args.dataset} data pipeline complete.')
 
 
 if __name__ == '__main__':

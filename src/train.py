@@ -18,6 +18,7 @@ Output:
 
 import os
 import csv
+import json
 import argparse
 import random
 import numpy as np
@@ -118,11 +119,12 @@ def select_summary(logits, sentences, cls_mask, k=3):
     return summaries
 
 
-def evaluate(model, loader, device):
-    """Mean ROUGE-1/2/L F-measure over a loader."""
+def evaluate(model, loader, device, collect=False):
+    """ROUGE-1/2/L means. If collect=True, also returns per-doc lists and all texts."""
     model.eval()
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'])
     r1, r2, rl = [], [], []
+    all_preds, all_refs = [], []
     with torch.no_grad():
         for batch in loader:
             input_ids      = batch['input_ids'].to(device)
@@ -137,6 +139,11 @@ def evaluate(model, loader, device):
                 r1.append(s['rouge1'].fmeasure)
                 r2.append(s['rouge2'].fmeasure)
                 rl.append(s['rougeL'].fmeasure)
+            if collect:
+                all_preds.extend(preds)
+                all_refs.extend(batch['references'])
+    if collect:
+        return float(np.mean(r1)), float(np.mean(r2)), float(np.mean(rl)), r1, r2, rl, all_preds, all_refs
     return float(np.mean(r1)), float(np.mean(r2)), float(np.mean(rl))
 
 
@@ -151,6 +158,7 @@ def main():
     parser.add_argument('--max_sents',     type=int,   default=50)
     parser.add_argument('--gauss_lr_mult', type=float, default=100.0,
                         help='LR multiplier for Gaussian parameters vs backbone')
+    parser.add_argument('--dataset',       default='cnndm', choices=['cnndm', 'xsum'])
     args = parser.parse_args()
 
     set_seed(SEED)
@@ -160,7 +168,7 @@ def main():
         print(f'GPU: {torch.cuda.get_device_name(0)}')
 
     save_dir = setup_save_dir()
-    cache_path = os.path.join(save_dir, 'cnndm_1000.pt')
+    cache_path = os.path.join(save_dir, f'{args.dataset}_1000.pt')
     print(f'Loading cache: {cache_path}')
     data = torch.load(cache_path, weights_only=False)
 
@@ -208,7 +216,8 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    tag = f'{args.variant}_{args.backbone.replace("/", "_")}'
+    ds_suffix = f'_{args.dataset}' if args.dataset != 'cnndm' else ''
+    tag = f'{args.variant}_{args.backbone.replace("/", "_")}{ds_suffix}'
     csv_path  = os.path.join(log_dir, f'{tag}.csv')
     ckpt_path = os.path.join(ckpt_dir, f'{tag}_best.pt')
 
@@ -242,7 +251,7 @@ def main():
             pbar.set_postfix(loss=f'{loss.item():.4f}')
 
         train_loss = float(np.mean(train_losses))
-        val_r1, val_r2, val_rl = evaluate(model, val_loader, device)
+        val_r1, val_r2, val_rl, *_ = evaluate(model, val_loader, device)
         print(f'  train_loss={train_loss:.4f}  '
               f'val: R1={val_r1:.4f}  R2={val_r2:.4f}  RL={val_rl:.4f}')
         gauss_params = model.gaussian.log_params()
@@ -264,15 +273,35 @@ def main():
 
     print(f'\nLoading best checkpoint for test eval: {ckpt_path}')
     model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=False))
-    test_r1, test_r2, test_rl = evaluate(model, test_loader, device)
-    print(f'\n=== Test results ({args.variant}, {args.backbone}) ===')
+    test_r1, test_r2, test_rl, docs_r1, docs_r2, docs_rl, all_preds, all_refs = \
+        evaluate(model, test_loader, device, collect=True)
+
+    print(f'\n=== Test results ({args.variant}, {args.backbone}, {args.dataset}) ===')
     print(f'  ROUGE-1: {test_r1:.4f}')
     print(f'  ROUGE-2: {test_r2:.4f}')
     print(f'  ROUGE-L: {test_rl:.4f}')
 
+    # BERTScore — only at test time, uses a small distilbert model for speed
+    test_bs = ''
+    try:
+        from bert_score import score as bert_score_fn
+        _, _, bf = bert_score_fn(all_preds, all_refs, lang='en',
+                                  model_type='distilbert-base-uncased',
+                                  verbose=False, device=str(device))
+        test_bs = round(bf.mean().item(), 4)
+        print(f'  BERTScore-F1: {test_bs:.4f}')
+    except Exception as e:
+        print(f'  BERTScore skipped: {e}')
+
+    # Save per-document scores for statistical tests
+    scores_path = os.path.join(log_dir, f'{tag}_test_scores.json')
+    with open(scores_path, 'w') as f:
+        json.dump({'r1': docs_r1, 'r2': docs_r2, 'rl': docs_rl}, f)
+
     with open(csv_path, 'a', newline='') as f:
-        csv.writer(f).writerow(['test', '', test_r1, test_r2, test_rl])
+        csv.writer(f).writerow(['test', '', test_r1, test_r2, test_rl, '', '', test_bs])
     print(f'\nLogs:        {csv_path}')
+    print(f'Scores:      {scores_path}')
     print(f'Checkpoint:  {ckpt_path}')
 
 
