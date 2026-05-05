@@ -132,7 +132,8 @@ def format_bertsum(sentences, tokenizer, max_len=512):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset',     default='cnndm', choices=['cnndm', 'xsum'])
+    parser.add_argument('--dataset',     default='cnndm',
+                        choices=['cnndm', 'xsum', 'multi_news'])
     parser.add_argument('--sample_size', type=int, default=1000,
                         help='Number of docs to sample (e.g. 1000 or 10000)')
     parser.add_argument('--workers',     type=int, default=2,
@@ -160,12 +161,20 @@ def main():
         articles  = ds['article']
         summaries = ds['highlights']
         source_tag = 'cnn_dailymail/3.0.0'
-    else:
+    elif args.dataset == 'xsum':
         print('\n[1/7] Loading XSum train split...')
         ds        = load_dataset('xsum', split='train')
         articles  = ds['document']
         summaries = ds['summary']
         source_tag = 'xsum'
+    elif args.dataset == 'multi_news':
+        print('\n[1/7] Loading Multi-News train split...')
+        ds        = load_dataset('multi_news', split='train')
+        articles  = ds['document']
+        summaries = ds['summary']
+        source_tag = 'multi_news'
+    else:
+        raise ValueError(f'Unknown dataset: {args.dataset}')
     print(f'      {len(articles)} train docs available')
 
     print(f'\n[2/7] Stratified sampling {args.sample_size} docs...')

@@ -39,10 +39,14 @@ def main():
     parser.add_argument('--log_dir', default='logs')
     parser.add_argument('--a',      required=True, help='Baseline tag, e.g. G0_roberta-base')
     parser.add_argument('--b',      required=True, help='Proposed tag, e.g. G2_roberta-base')
-    parser.add_argument('--metric', default='rl', choices=['r1', 'r2', 'rl'])
+    parser.add_argument('--metric', default='rl',
+                        choices=['r1', 'r2', 'rl', 'rlsum', 'bertscore', 'meteor'])
     args = parser.parse_args()
 
-    metric_name = {'r1': 'ROUGE-1', 'r2': 'ROUGE-2', 'rl': 'ROUGE-L'}[args.metric]
+    metric_name = {
+        'r1': 'ROUGE-1', 'r2': 'ROUGE-2', 'rl': 'ROUGE-L', 'rlsum': 'ROUGE-Lsum',
+        'bertscore': 'BERTScore-F1', 'meteor': 'METEOR',
+    }[args.metric]
     a = load_scores(args.log_dir, args.a, args.metric)
     b = load_scores(args.log_dir, args.b, args.metric)
 

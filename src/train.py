@@ -60,10 +60,14 @@ def select_summary(logits, sentences, k=3):
 
 def evaluate(model, sentences_list, labels_list, references_list, device,
              s_max, s_min, mu, sigma, collect=False):
-    """ROUGE-1/2/L means (and optionally per-doc lists + texts)."""
+    """
+    Returns mean ROUGE-1, ROUGE-2, ROUGE-L, ROUGE-Lsum.
+    With collect=True also returns per-doc score lists + predicted/reference texts
+    so the caller can run BERTScore / METEOR / paired stats once at the end.
+    """
     model.eval()
-    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'])
-    r1, r2, rl = [], [], []
+    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL', 'rougeLsum'])
+    r1, r2, rl, rls = [], [], [], []
     all_preds, all_refs = [], []
     with torch.no_grad():
         for sents, labels, ref in zip(sentences_list, labels_list, references_list):
@@ -78,13 +82,35 @@ def evaluate(model, sentences_list, labels_list, references_list, device,
             r1.append(s['rouge1'].fmeasure)
             r2.append(s['rouge2'].fmeasure)
             rl.append(s['rougeL'].fmeasure)
+            rls.append(s['rougeLsum'].fmeasure)
             if collect:
                 all_preds.append(pred)
                 all_refs.append(ref)
+    means = (float(np.mean(r1)), float(np.mean(r2)),
+             float(np.mean(rl)), float(np.mean(rls)))
     if collect:
-        return (float(np.mean(r1)), float(np.mean(r2)), float(np.mean(rl)),
-                r1, r2, rl, all_preds, all_refs)
-    return float(np.mean(r1)), float(np.mean(r2)), float(np.mean(rl))
+        return means + (r1, r2, rl, rls, all_preds, all_refs)
+    return means
+
+
+def compute_meteor(preds, refs):
+    """METEOR averaged over docs. Returns float or None on failure."""
+    try:
+        import nltk
+        from nltk.translate.meteor_score import meteor_score
+        nltk.download('wordnet', quiet=True)
+        nltk.download('omw-1.4', quiet=True)
+        nltk.download('punkt', quiet=True)
+        from nltk.tokenize import word_tokenize
+        scores = []
+        for p, r in zip(preds, refs):
+            ref_toks  = word_tokenize(r.lower())
+            pred_toks = word_tokenize(p.lower())
+            scores.append(meteor_score([ref_toks], pred_toks))
+        return float(np.mean(scores)), scores
+    except Exception as e:
+        print(f'  METEOR skipped: {e}')
+        return None, None
 
 
 def variant_to_params(variant):
@@ -210,7 +236,8 @@ def main():
 
     if not args.eval_only:
         with open(csv_path, 'w', newline='') as f:
-            csv.writer(f).writerow(['epoch', 'train_loss', 'val_r1', 'val_r2', 'val_rl',
+            csv.writer(f).writerow(['epoch', 'train_loss',
+                                     'val_r1', 'val_r2', 'val_rl', 'val_rlsum',
                                      's_max', 's_min', 'mu', 'sigma'])
 
     # ---- Training ----
@@ -262,16 +289,17 @@ def main():
             scheduler.step()
 
             train_loss = float(np.mean(train_losses)) if train_losses else float('nan')
-            val_r1, val_r2, val_rl = evaluate(
+            val_r1, val_r2, val_rl, val_rlsum = evaluate(
                 model, val_sents, val_labs, val_refs, device,
                 s_max, s_min, mu, sigma,
             )
             print(f'  train_loss={train_loss:.4f}  '
-                  f'val: R1={val_r1:.4f}  R2={val_r2:.4f}  RL={val_rl:.4f}')
+                  f'val: R1={val_r1:.4f}  R2={val_r2:.4f}  '
+                  f'RL={val_rl:.4f}  RLsum={val_rlsum:.4f}')
 
             with open(csv_path, 'a', newline='') as f:
                 csv.writer(f).writerow([
-                    epoch, train_loss, val_r1, val_r2, val_rl,
+                    epoch, train_loss, val_r1, val_r2, val_rl, val_rlsum,
                     s_max, s_min, mu, sigma,
                 ])
 
@@ -283,33 +311,52 @@ def main():
     # ---- Test ----
     print(f'\nLoading best checkpoint for test eval: {ckpt_path}')
     model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=False))
-    test_r1, test_r2, test_rl, docs_r1, docs_r2, docs_rl, all_preds, all_refs = evaluate(
+    (test_r1, test_r2, test_rl, test_rlsum,
+     docs_r1, docs_r2, docs_rl, docs_rlsum,
+     all_preds, all_refs) = evaluate(
         model, test_sents, test_labs, test_refs, device,
         s_max, s_min, mu, sigma, collect=True,
     )
 
     print(f'\n=== Test results ({args.variant}, paracnn, {args.dataset}) ===')
-    print(f'  ROUGE-1: {test_r1:.4f}')
-    print(f'  ROUGE-2: {test_r2:.4f}')
-    print(f'  ROUGE-L: {test_rl:.4f}')
+    print(f'  ROUGE-1     : {test_r1:.4f}')
+    print(f'  ROUGE-2     : {test_r2:.4f}')
+    print(f'  ROUGE-L     : {test_rl:.4f}')
+    print(f'  ROUGE-Lsum  : {test_rlsum:.4f}')
 
-    test_bs = ''
+    # BERTScore (semantic similarity)
+    test_bs, docs_bs = '', None
     try:
         from bert_score import score as bert_score_fn
         _, _, bf = bert_score_fn(all_preds, all_refs, lang='en',
                                   model_type='distilbert-base-uncased',
                                   verbose=False, device=str(device))
+        docs_bs = bf.tolist()
         test_bs = round(bf.mean().item(), 4)
         print(f'  BERTScore-F1: {test_bs:.4f}')
     except Exception as e:
         print(f'  BERTScore skipped: {e}')
 
+    # METEOR (n-gram + synonym + stem matching)
+    test_meteor, docs_meteor = '', None
+    m_mean, m_per = compute_meteor(all_preds, all_refs)
+    if m_mean is not None:
+        test_meteor = round(m_mean, 4)
+        docs_meteor = m_per
+        print(f'  METEOR      : {test_meteor:.4f}')
+
     scores_path = os.path.join(log_dir, f'{tag}_test_scores.json')
     with open(scores_path, 'w') as f:
-        json.dump({'r1': docs_r1, 'r2': docs_r2, 'rl': docs_rl}, f)
+        json.dump({
+            'r1': docs_r1, 'r2': docs_r2, 'rl': docs_rl, 'rlsum': docs_rlsum,
+            'bertscore': docs_bs, 'meteor': docs_meteor,
+        }, f)
 
     with open(csv_path, 'a', newline='') as f:
-        csv.writer(f).writerow(['test', '', test_r1, test_r2, test_rl, '', '', '', test_bs])
+        csv.writer(f).writerow(['test', '',
+                                 test_r1, test_r2, test_rl, test_rlsum,
+                                 'bertscore', test_bs,
+                                 'meteor', test_meteor])
     print(f'\nLogs:        {csv_path}')
     print(f'Scores:      {scores_path}')
     print(f'Checkpoint:  {ckpt_path}')
