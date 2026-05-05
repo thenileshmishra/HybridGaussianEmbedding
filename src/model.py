@@ -1,15 +1,17 @@
 """
-BERTSum extractive summarization model (G0 baseline, no Gaussian).
+BERTSum extractive summarization model.
 
-Architecture:
-    [CLS] S1 [SEP] [CLS] S2 [SEP] ...
-        -> Transformer backbone (RoBERTa-base by default)
-        -> gather CLS embeddings per sentence       (B, N, d)
-        -> add fixed sinusoidal sentence-level PE
-        -> 2-layer inter-sentence Transformer
-        -> Linear(d -> 1)                           per-sentence logit
+Supports variants:
+    G0 — sinusoidal sentence PE only (baseline)
+    G1 — fixed-scalar Gaussian bias  (mu=0.5, sigma=0.2, alpha=1.0)
+    G2 — learnable-scalar Gaussian   (mu, sigma, alpha are nn.Parameters)
+    G3 — fixed mu/sigma, learnable vector w per dimension
+    G4 — fully learnable Gaussian    (mu, sigma, vector w)
 
-The forward returns raw logits; BCEWithLogitsLoss is applied externally.
+Gaussian formula:  G(i) = exp( -(i_norm - mu)^2 / (2*sigma^2) )
+Applied as:        cls_h[i] += alpha * G(i)        for G1/G2
+                   cls_h[i] += G(i) * w             for G3/G4
+where i_norm = i / (N-1), normalized to [0, 1].
 """
 
 import torch
@@ -18,7 +20,6 @@ from transformers import AutoModel
 
 
 def sinusoidal_pe(max_len, d, n=10000.0):
-    """Standard sin/cos positional encoding."""
     pe = torch.zeros(max_len, d)
     pos = torch.arange(max_len).unsqueeze(1).float()
     div = torch.pow(n, torch.arange(0, d, 2).float() / d)
@@ -27,10 +28,73 @@ def sinusoidal_pe(max_len, d, n=10000.0):
     return pe
 
 
+class GaussianBias(nn.Module):
+    """Sentence-position Gaussian bias added to CLS embeddings."""
+
+    def __init__(self, d, variant='G0'):
+        super().__init__()
+        self.variant = variant
+
+        if variant == 'G1':
+            self.register_buffer('mu',    torch.tensor(0.5))
+            self.register_buffer('sigma', torch.tensor(0.2))
+            self.register_buffer('alpha', torch.tensor(1.0))
+        elif variant == 'G2':
+            self.mu    = nn.Parameter(torch.tensor(0.5))
+            self.sigma = nn.Parameter(torch.tensor(0.2))
+            self.alpha = nn.Parameter(torch.tensor(1.0))
+        elif variant == 'G3':
+            self.register_buffer('mu',    torch.tensor(0.5))
+            self.register_buffer('sigma', torch.tensor(0.2))
+            self.w = nn.Parameter(torch.zeros(d))
+        elif variant == 'G4':
+            self.mu    = nn.Parameter(torch.tensor(0.5))
+            self.sigma = nn.Parameter(torch.tensor(0.2))
+            self.w = nn.Parameter(torch.zeros(d))
+
+    def forward(self, cls_h, cls_mask):
+        """
+        Args:
+            cls_h:    (B, N, d) sentence embeddings
+            cls_mask: (B, N)   1 for real sentences, 0 for padding
+        Returns:
+            cls_h + Gaussian bias, same shape
+        """
+        if self.variant == 'G0':
+            return cls_h
+
+        B, N, d = cls_h.shape
+        positions = torch.arange(N, device=cls_h.device).float() / max(N - 1, 1)  # (N,)
+        mu    = self.mu.clamp(0.01, 0.99)
+        sigma = self.sigma.abs().clamp(0.01, 1.0)
+
+        gauss = torch.exp(-((positions - mu) ** 2) / (2 * sigma ** 2))  # (N,)
+        gauss = gauss.unsqueeze(0) * cls_mask                            # (B, N)
+
+        if self.variant in ('G1', 'G2'):
+            bias = self.alpha * gauss.unsqueeze(-1)                      # (B, N, 1) -> (B, N, d)
+        else:  # G3, G4
+            bias = gauss.unsqueeze(-1) * self.w                          # (B, N, d)
+
+        return cls_h + bias
+
+    def log_params(self):
+        """Current parameter values for console logging."""
+        if self.variant == 'G0':
+            return {}
+        out = {'mu': self.mu.item(), 'sigma': self.sigma.item()}
+        if self.variant in ('G1', 'G2'):
+            out['alpha'] = self.alpha.item()
+        else:
+            out['w_norm'] = self.w.norm().item()
+        return out
+
+
 class BERTSumExt(nn.Module):
     def __init__(
         self,
         backbone_name='roberta-base',
+        variant='G0',
         d=768,
         n_heads=6,
         n_layers=2,
@@ -40,6 +104,7 @@ class BERTSumExt(nn.Module):
     ):
         super().__init__()
         self.backbone = AutoModel.from_pretrained(backbone_name)
+        self.gaussian  = GaussianBias(d, variant=variant)
         self.register_buffer('sent_pe', sinusoidal_pe(max_sents, d))
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -51,40 +116,34 @@ class BERTSumExt(nn.Module):
             batch_first=True,
         )
         self.inter_encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-        self.dropout = nn.Dropout(dropout)
+        self.dropout    = nn.Dropout(dropout)
         self.classifier = nn.Linear(d, 1)
 
     def forward(self, input_ids, attention_mask, cls_positions, cls_mask):
         """
         Args:
-            input_ids:      (B, L) token ids
-            attention_mask: (B, L) 1/0 mask over tokens
-            cls_positions:  (B, N) per-sentence [CLS] index in the token sequence
-                            (padded with 0; use cls_mask to identify real slots)
+            input_ids:      (B, L)
+            attention_mask: (B, L)
+            cls_positions:  (B, N) [CLS] token index per sentence, 0-padded
             cls_mask:       (B, N) 1.0 for real sentence, 0.0 for padding
-
         Returns:
-            logits:         (B, N) per-sentence logit (BCE-ready)
+            logits: (B, N) raw per-sentence scores
         """
-        # Backbone (no token_type_ids -> RoBERTa uses zeros internally)
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        h = out.last_hidden_state                      # (B, L, d)
+        h   = out.last_hidden_state                                   # (B, L, d)
 
-        # Gather per-sentence CLS embeddings
-        d = h.size(-1)
+        d   = h.size(-1)
         idx = cls_positions.clamp(min=0).unsqueeze(-1).expand(-1, -1, d)
-        cls_h = torch.gather(h, dim=1, index=idx)      # (B, N, d)
+        cls_h = torch.gather(h, dim=1, index=idx)                     # (B, N, d)
 
-        # Zero out padded slots, add sentence-level PE
-        cls_h = cls_h * cls_mask.unsqueeze(-1)
-        N = cls_h.size(1)
-        cls_h = cls_h + self.sent_pe[:N].unsqueeze(0)
+        cls_h = cls_h * cls_mask.unsqueeze(-1)                        # zero padding
+        cls_h = self.gaussian(cls_h, cls_mask)                        # Gaussian bias
+        N     = cls_h.size(1)
+        cls_h = cls_h + self.sent_pe[:N].unsqueeze(0)                 # sinusoidal PE
         cls_h = self.dropout(cls_h)
 
-        # Inter-sentence transformer (mask out padded sentences)
-        pad_mask = (cls_mask == 0)                     # True = ignore
+        pad_mask = (cls_mask == 0)                                    # True = ignore
         x = self.inter_encoder(cls_h, src_key_padding_mask=pad_mask)
 
-        # Per-sentence logit
-        logits = self.classifier(x).squeeze(-1)        # (B, N)
+        logits = self.classifier(x).squeeze(-1)                       # (B, N)
         return logits

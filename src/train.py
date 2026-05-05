@@ -180,7 +180,8 @@ def main():
     val_loader   = make_loader(data['val_idx'],   shuffle=False)
     test_loader  = make_loader(data['test_idx'],  shuffle=False)
 
-    model = BERTSumExt(backbone_name=args.backbone, max_sents=args.max_sents).to(device)
+    model = BERTSumExt(backbone_name=args.backbone, variant=args.variant,
+                       max_sents=args.max_sents).to(device)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f'Model: {args.backbone}  trainable params: {n_params/1e6:.1f}M')
 
@@ -200,7 +201,8 @@ def main():
     ckpt_path = os.path.join(ckpt_dir, f'{tag}_best.pt')
 
     with open(csv_path, 'w', newline='') as f:
-        csv.writer(f).writerow(['epoch', 'train_loss', 'val_r1', 'val_r2', 'val_rl'])
+        csv.writer(f).writerow(['epoch', 'train_loss', 'val_r1', 'val_r2', 'val_rl',
+                                 'gauss_mu', 'gauss_sigma', 'gauss_alpha_or_wnorm'])
 
     best_rl = -1.0
     for epoch in range(1, args.epochs + 1):
@@ -231,9 +233,17 @@ def main():
         val_r1, val_r2, val_rl = evaluate(model, val_loader, device)
         print(f'  train_loss={train_loss:.4f}  '
               f'val: R1={val_r1:.4f}  R2={val_r2:.4f}  RL={val_rl:.4f}')
+        gauss_params = model.gaussian.log_params()
+        if gauss_params:
+            print('  gaussian: ' + '  '.join(f'{k}={v:.4f}' for k, v in gauss_params.items()))
 
+        gp = model.gaussian.log_params()
         with open(csv_path, 'a', newline='') as f:
-            csv.writer(f).writerow([epoch, train_loss, val_r1, val_r2, val_rl])
+            csv.writer(f).writerow([
+                epoch, train_loss, val_r1, val_r2, val_rl,
+                gp.get('mu', ''), gp.get('sigma', ''),
+                gp.get('alpha', gp.get('w_norm', '')),
+            ])
 
         if val_rl > best_rl:
             best_rl = val_rl
