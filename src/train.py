@@ -147,8 +147,10 @@ def main():
     parser.add_argument('--batch_size', type=int,   default=8)
     parser.add_argument('--epochs',     type=int,   default=3)
     parser.add_argument('--lr',         type=float, default=2e-5)
-    parser.add_argument('--max_len',    type=int,   default=512)
-    parser.add_argument('--max_sents',  type=int,   default=50)
+    parser.add_argument('--max_len',       type=int,   default=512)
+    parser.add_argument('--max_sents',     type=int,   default=50)
+    parser.add_argument('--gauss_lr_mult', type=float, default=100.0,
+                        help='LR multiplier for Gaussian parameters vs backbone')
     args = parser.parse_args()
 
     set_seed(SEED)
@@ -186,7 +188,17 @@ def main():
     print(f'Model: {args.backbone}  trainable params: {n_params/1e6:.1f}M')
 
     total_steps = len(train_loader) * args.epochs
-    optimizer = AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.999), weight_decay=1e-2)
+
+    # Gaussian parameters need a much higher lr than the pretrained backbone.
+    # Using the same lr=2e-5 causes them to barely move in 3 epochs.
+    gauss_param_ids = {id(p) for p in model.gaussian.parameters()}
+    backbone_params = [p for p in model.parameters() if id(p) not in gauss_param_ids]
+    gauss_params    = list(model.gaussian.parameters())
+    param_groups = [{'params': backbone_params, 'lr': args.lr}]
+    if gauss_params:
+        param_groups.append({'params': gauss_params, 'lr': args.lr * args.gauss_lr_mult})
+
+    optimizer = AdamW(param_groups, betas=(0.9, 0.999), weight_decay=1e-2)
     scheduler = linear_warmup_decay(optimizer, total_steps, warmup_ratio=0.1)
     loss_fn = nn.BCEWithLogitsLoss(reduction='none')
 
