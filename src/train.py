@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import StepLR
-from transformers import RobertaTokenizer
+from transformers import RobertaTokenizerFast
 from rouge_score import rouge_scorer
 from tqdm import tqdm
 
@@ -190,7 +190,7 @@ def main():
     print(f'Train docs: {len(train_sents)}  Val: {len(val_sents)}  Test: {len(test_sents)}')
 
     # ---- Build model ----
-    tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+    tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
     model = ParaCNNExt(
         max_len=args.max_len,
         d=768,

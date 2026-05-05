@@ -29,7 +29,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import RobertaModel, RobertaConfig, RobertaTokenizer
+from transformers import RobertaModel, RobertaConfig, RobertaTokenizerFast
 
 
 # ============================ Encoding helpers ============================
@@ -104,7 +104,7 @@ class RoBertaDocumentEmbedder(nn.Module):
         super().__init__()
         self.max_len = max_len
         self.d = d
-        self.tokenizer = tokenizer or RobertaTokenizer.from_pretrained('roberta-base')
+        self.tokenizer = tokenizer or RobertaTokenizerFast.from_pretrained('roberta-base')
 
     def forward(self, input_text, s_max, s_min, mu, sigma):
         seq_len, d = self.max_len, self.d
@@ -113,8 +113,8 @@ class RoBertaDocumentEmbedder(nn.Module):
         input_ids = []
         attention_mask = []
         for sent in input_text:
-            enc = self.tokenizer.encode_plus(sent, return_attention_mask=True,
-                                             add_special_tokens=True)
+            enc = self.tokenizer(sent, return_attention_mask=True,
+                                 add_special_tokens=True)
             input_ids.extend(enc['input_ids'])
             attention_mask.extend(enc['attention_mask'])
 
