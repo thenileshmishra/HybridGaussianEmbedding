@@ -40,13 +40,11 @@ VAL_SIZE = 160
 
 
 def setup_save_dir():
-    """Mount Drive in Colab. Fall back to ./data locally."""
-    try:
-        from google.colab import drive
-        drive.mount('/content/drive')
-        return '/content/drive/MyDrive/GaussianBERTSum/data'
-    except ImportError:
-        return './data'
+    """Return save directory. On Colab, mount Drive manually in a cell first."""
+    drive_root = '/content/drive/MyDrive'
+    if os.path.exists(drive_root):
+        return os.path.join(drive_root, 'GaussianBERTSum/data')
+    return './data'
 
 
 def fast_sent_count(text):
