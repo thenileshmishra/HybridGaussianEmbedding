@@ -159,6 +159,8 @@ def main():
     parser.add_argument('--gauss_lr_mult', type=float, default=100.0,
                         help='LR multiplier for Gaussian parameters vs backbone')
     parser.add_argument('--dataset',       default='cnndm', choices=['cnndm', 'xsum'])
+    parser.add_argument('--eval_only',     action='store_true',
+                        help='Skip training, load best checkpoint and run test eval only')
     args = parser.parse_args()
 
     set_seed(SEED)
@@ -221,12 +223,13 @@ def main():
     csv_path  = os.path.join(log_dir, f'{tag}.csv')
     ckpt_path = os.path.join(ckpt_dir, f'{tag}_best.pt')
 
-    with open(csv_path, 'w', newline='') as f:
-        csv.writer(f).writerow(['epoch', 'train_loss', 'val_r1', 'val_r2', 'val_rl',
-                                 'gauss_mu', 'gauss_sigma', 'gauss_alpha_or_wnorm'])
+    if not args.eval_only:
+        with open(csv_path, 'w', newline='') as f:
+            csv.writer(f).writerow(['epoch', 'train_loss', 'val_r1', 'val_r2', 'val_rl',
+                                     'gauss_mu', 'gauss_sigma', 'gauss_alpha_or_wnorm'])
 
     best_rl = -1.0
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(0 if args.eval_only else 1, 0 if args.eval_only else args.epochs + 1):
         model.train()
         train_losses = []
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}/{args.epochs}')
