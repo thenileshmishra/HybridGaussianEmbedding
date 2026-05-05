@@ -1,27 +1,26 @@
 """
-CNN/DailyMail data pipeline.
+CNN/DailyMail and XSum data pipeline.
 
-Loads CNN/DM, takes a 1000-doc stratified sample by sentence count, splits
-64/16/20 into train/val/test, sentence-splits each article and reference
-summary, and saves everything to a single .pt cache.
+Loads dataset, takes a stratified sample by sentence count, splits 64/16/20
+into train/val/test, sentence-splits each article and reference summary,
+builds oracle extractive labels, and saves everything to a .pt cache.
 
 Tokenization is deferred to training time so the same cache works with
-RoBERTa, DistilBERT, ALBERT, and DeBERTa without rebuilding.
+BERT, RoBERTa, DistilBERT, ALBERT, and DeBERTa without rebuilding.
 
 Run (Colab):
-    !python src/data.py
-
-Run (local):
-    python src/data.py
+    !python src/data.py --dataset cnndm --sample_size 10000
+    !python src/data.py --dataset xsum  --sample_size 10000
 
 Output:
-    {SAVE_DIR}/cnndm_1000.pt
+    {SAVE_DIR}/{dataset}_{sample_size}.pt
 """
 
 import os
 import re
 import random
 import argparse
+import multiprocessing as mp
 import numpy as np
 import pandas as pd
 import torch
@@ -33,11 +32,8 @@ from tqdm import tqdm
 from transformers import RobertaTokenizerFast
 
 
-SEED = 42
-SAMPLE_SIZE = 1000
+SEED    = 42
 MAX_SENTS = 50
-TRAIN_SIZE = 640
-VAL_SIZE = 160
 
 
 def setup_save_dir():
@@ -49,16 +45,10 @@ def setup_save_dir():
 
 
 def fast_sent_count(text):
-    """Cheap regex-based sentence count for stratification."""
     return max(len(re.findall(r'[.!?]+', text)), 1)
 
 
 def stratified_sample(articles, sample_size, seed):
-    """
-    Bin documents by sentence count (100 quantile bins) and sample
-    proportionally so the subset has the same length distribution as
-    the full set.
-    """
     counts = [fast_sent_count(a) for a in articles]
     df = pd.DataFrame({'idx': np.arange(len(articles)), 'n_sents': counts})
     df['bin'] = pd.qcut(df['n_sents'], q=100, labels=False, duplicates='drop')
@@ -88,22 +78,14 @@ def split_sents(text, cap):
 
 
 def create_oracle_labels(article_sents, summary_sents):
-    """
-    BERTSum-standard oracle extractive labels.
-
-    For each reference summary sentence, pick the top-3 source sentences by
-    average of ROUGE-1, ROUGE-2, ROUGE-L F-measure. Mark those source
-    sentences as 1, rest as 0. This binary vector is the BCE training target.
-    """
+    """Top-3 source sentences by avg ROUGE-1/2/L per reference sentence."""
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'])
     labels = [0] * len(article_sents)
     for ref in summary_sents:
         scores = []
         for src in article_sents:
             s = scorer.score(src, ref)
-            avg_f = (s['rouge1'].fmeasure
-                     + s['rouge2'].fmeasure
-                     + s['rougeL'].fmeasure) / 3.0
+            avg_f = (s['rouge1'].fmeasure + s['rouge2'].fmeasure + s['rougeL'].fmeasure) / 3.0
             scores.append(avg_f)
         top3 = sorted(range(len(scores)), key=lambda i: -scores[i])[:3]
         for i in top3:
@@ -111,16 +93,16 @@ def create_oracle_labels(article_sents, summary_sents):
     return labels
 
 
+def _oracle_worker(pair):
+    """Top-level wrapper so multiprocessing can pickle it."""
+    return create_oracle_labels(pair[0], pair[1])
+
+
 def format_bertsum(sentences, tokenizer, max_len=512):
     """
-    Build BERTSum input format: [CLS] S1 [SEP] [CLS] S2 [SEP] ...
-
-    Reads tokenizer.cls_token_id and sep_token_id directly, so the same
-    function works for RoBERTa / DistilBERT / ALBERT / DeBERTa. Truncates
-    by dropping later sentences if total length would exceed max_len.
-
-    Returns:
-        dict with input_ids, attention_mask, token_type_ids, cls_positions
+    Build BERTSum input: [CLS] S1 [SEP] [CLS] S2 [SEP] ...
+    Works for BERT / RoBERTa / DistilBERT / ALBERT / DeBERTa by reading
+    tokenizer.cls_token_id and sep_token_id directly.
     """
     cls = tokenizer.cls_token_id
     sep = tokenizer.sep_token_id
@@ -141,54 +123,61 @@ def format_bertsum(sentences, tokenizer, max_len=512):
         seg = 1 - seg
 
     return {
-        'input_ids': input_ids,
+        'input_ids':      input_ids,
         'attention_mask': [1] * len(input_ids),
         'token_type_ids': token_type_ids,
-        'cls_positions': cls_positions,
+        'cls_positions':  cls_positions,
     }
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', default='cnndm', choices=['cnndm', 'xsum'],
-                        help='Dataset to process: cnndm or xsum')
+    parser.add_argument('--dataset',     default='cnndm', choices=['cnndm', 'xsum'])
+    parser.add_argument('--sample_size', type=int, default=1000,
+                        help='Number of docs to sample (e.g. 1000 or 10000)')
+    parser.add_argument('--workers',     type=int, default=2,
+                        help='Parallel workers for oracle label computation')
     args = parser.parse_args()
+
+    # Derive split sizes from sample_size (64/16/20 ratio)
+    train_size = int(args.sample_size * 0.64)
+    val_size   = int(args.sample_size * 0.16)
 
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
 
-    nltk.download('punkt', quiet=True)
+    nltk.download('punkt',     quiet=True)
     nltk.download('punkt_tab', quiet=True)
 
     save_dir = setup_save_dir()
     os.makedirs(save_dir, exist_ok=True)
-    print(f'Save dir: {save_dir}  dataset: {args.dataset}')
+    print(f'Save dir: {save_dir}  dataset: {args.dataset}  sample_size: {args.sample_size}')
 
     if args.dataset == 'cnndm':
         print('\n[1/7] Loading CNN/DailyMail 3.0.0 train split...')
-        ds = load_dataset('cnn_dailymail', '3.0.0', split='train')
+        ds        = load_dataset('cnn_dailymail', '3.0.0', split='train')
         articles  = ds['article']
         summaries = ds['highlights']
         source_tag = 'cnn_dailymail/3.0.0'
     else:
         print('\n[1/7] Loading XSum train split...')
-        ds = load_dataset('xsum', split='train')
+        ds        = load_dataset('xsum', split='train')
         articles  = ds['document']
         summaries = ds['summary']
         source_tag = 'xsum'
-    print(f'      {len(articles)} train docs')
+    print(f'      {len(articles)} train docs available')
 
-    print('\n[2/7] Stratified sampling 1000 docs...')
-    sampled_idx = stratified_sample(articles, SAMPLE_SIZE, SEED)
+    print(f'\n[2/7] Stratified sampling {args.sample_size} docs...')
+    sampled_idx       = stratified_sample(articles, args.sample_size, SEED)
     sampled_articles  = [articles[i]  for i in sampled_idx]
     sampled_summaries = [summaries[i] for i in sampled_idx]
     actual_n = len(sampled_idx)
     print(f'      sampled {actual_n} docs')
 
-    test_n = actual_n - TRAIN_SIZE - VAL_SIZE
-    print(f'\n[3/7] Splitting {TRAIN_SIZE}/{VAL_SIZE}/{test_n}...')
-    train_idx, val_idx, test_idx = split_indices(actual_n, TRAIN_SIZE, VAL_SIZE, SEED)
+    test_n = actual_n - train_size - val_size
+    print(f'\n[3/7] Splitting {train_size}/{val_size}/{test_n}...')
+    train_idx, val_idx, test_idx = split_indices(actual_n, train_size, val_size, SEED)
     print(f'      train={len(train_idx)}  val={len(val_idx)}  test={len(test_idx)}')
 
     print(f'\n[4/7] Sentence-splitting (cap at {MAX_SENTS} sentences)...')
@@ -202,14 +191,20 @@ def main():
     demo = format_bertsum(articles_sents[0], tok, max_len=512)
     for p in demo['cls_positions']:
         assert demo['input_ids'][p] == tok.cls_token_id
-    print(f'      OK - encoded {len(demo["cls_positions"])} sentences into '
+    print(f'      OK — encoded {len(demo["cls_positions"])} sentences into '
           f'{len(demo["input_ids"])} tokens')
 
-    print('\n[6/7] Building oracle extractive labels (top-3 ROUGE)...')
-    oracle_labels = [
-        create_oracle_labels(a, s)
-        for a, s in tqdm(list(zip(articles_sents, summaries_sents)), total=actual_n)
-    ]
+    n_workers = min(args.workers, mp.cpu_count())
+    print(f'\n[6/7] Building oracle extractive labels ({n_workers} workers)...')
+    pairs = list(zip(articles_sents, summaries_sents))
+    if n_workers > 1:
+        with mp.Pool(n_workers) as pool:
+            oracle_labels = list(tqdm(
+                pool.imap(_oracle_worker, pairs, chunksize=20),
+                total=actual_n,
+            ))
+    else:
+        oracle_labels = [_oracle_worker(p) for p in tqdm(pairs)]
     pos_rate = np.mean([sum(lbl) / max(len(lbl), 1) for lbl in oracle_labels])
     print(f'      mean positive rate per doc: {pos_rate:.3f}')
 
@@ -226,25 +221,22 @@ def main():
         'seed':            SEED,
         'source_dataset':  source_tag,
     }
-    save_path = os.path.join(save_dir, f'{args.dataset}_1000.pt')
+    save_path = os.path.join(save_dir, f'{args.dataset}_{actual_n}.pt')
     torch.save(data, save_path)
     print(f'      saved -> {save_path}')
-    print(f'      size: {os.path.getsize(save_path) / 1024:.1f} KB')
+    print(f'      size: {os.path.getsize(save_path) / 1024 / 1024:.1f} MB')
 
     print('\n--- Verify ---')
     reloaded = torch.load(save_path, weights_only=False)
-    doc_id = reloaded['train_idx'][0]
-    sents  = reloaded['articles_sents'][doc_id]
-    labels = reloaded['oracle_labels'][doc_id]
+    doc_id   = reloaded['train_idx'][0]
+    sents    = reloaded['articles_sents'][doc_id]
+    labels   = reloaded['oracle_labels'][doc_id]
     print(f'Train doc #{doc_id}  (sentences={len(sents)}  positives={sum(labels)})')
-    for i, (s, lbl) in enumerate(zip(sents, labels)):
+    for i, (s, lbl) in enumerate(zip(sents[:8], labels[:8])):
         marker = '[+]' if lbl else '   '
         print(f'  {marker} S{i:02d}: {s[:90]}')
-    print(f'\nReference summary ({len(reloaded["summaries_sents"][doc_id])} sentences):')
-    for i, s in enumerate(reloaded['summaries_sents'][doc_id]):
-        print(f'  S{i}: {s}')
 
-    print(f'\n[done] {args.dataset} data pipeline complete.')
+    print(f'\n[done] {args.dataset} {actual_n}-doc cache complete.')
 
 
 if __name__ == '__main__':

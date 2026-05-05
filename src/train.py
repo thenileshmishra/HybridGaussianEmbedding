@@ -159,6 +159,8 @@ def main():
     parser.add_argument('--gauss_lr_mult', type=float, default=100.0,
                         help='LR multiplier for Gaussian parameters vs backbone')
     parser.add_argument('--dataset',       default='cnndm', choices=['cnndm', 'xsum'])
+    parser.add_argument('--sample_size',   type=int, default=1000,
+                        help='Must match the sample_size used in data.py')
     parser.add_argument('--eval_only',     action='store_true',
                         help='Skip training, load best checkpoint and run test eval only')
     args = parser.parse_args()
@@ -170,7 +172,7 @@ def main():
         print(f'GPU: {torch.cuda.get_device_name(0)}')
 
     save_dir = setup_save_dir()
-    cache_path = os.path.join(save_dir, f'{args.dataset}_1000.pt')
+    cache_path = os.path.join(save_dir, f'{args.dataset}_{args.sample_size}.pt')
     print(f'Loading cache: {cache_path}')
     data = torch.load(cache_path, weights_only=False)
 
@@ -218,8 +220,9 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    ds_suffix = f'_{args.dataset}' if args.dataset != 'cnndm' else ''
-    tag = f'{args.variant}_{args.backbone.replace("/", "_")}{ds_suffix}'
+    ds_suffix   = f'_{args.dataset}' if args.dataset != 'cnndm' else ''
+    size_suffix = f'_{args.sample_size}' if args.sample_size != 1000 else ''
+    tag = f'{args.variant}_{args.backbone.replace("/", "_")}{ds_suffix}{size_suffix}'
     csv_path  = os.path.join(log_dir, f'{tag}.csv')
     ckpt_path = os.path.join(ckpt_dir, f'{tag}_best.pt')
 
