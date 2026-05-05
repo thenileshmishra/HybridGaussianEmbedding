@@ -169,13 +169,15 @@ def main():
     sampled_idx = stratified_sample(articles, SAMPLE_SIZE, SEED)
     sampled_articles = [articles[i] for i in sampled_idx]
     sampled_summaries = [summaries[i] for i in sampled_idx]
-    print(f'      sampled {len(sampled_idx)} docs')
+    actual_n = len(sampled_idx)
+    print(f'      sampled {actual_n} docs')
 
-    print('\n[3/6] Splitting 640/160/200...')
-    train_idx, val_idx, test_idx = split_indices(SAMPLE_SIZE, TRAIN_SIZE, VAL_SIZE, SEED)
+    test_n = actual_n - TRAIN_SIZE - VAL_SIZE
+    print(f'\n[3/6] Splitting {TRAIN_SIZE}/{VAL_SIZE}/{test_n}...')
+    train_idx, val_idx, test_idx = split_indices(actual_n, TRAIN_SIZE, VAL_SIZE, SEED)
     print(f'      train={len(train_idx)}  val={len(val_idx)}  test={len(test_idx)}')
 
-    print(f'\n[4/6] Sentence-splitting (cap at {MAX_SENTS} sentences)...')
+    print(f'\n[4/7] Sentence-splitting (cap at {MAX_SENTS} sentences)...')
     articles_sents = [split_sents(a, MAX_SENTS) for a in sampled_articles]
     summaries_sents = [split_sents(s, MAX_SENTS) for s in sampled_summaries]
     art_lens = [len(s) for s in articles_sents]
@@ -193,7 +195,7 @@ def main():
     oracle_labels = [
         create_oracle_labels(a, s)
         for a, s in tqdm(list(zip(articles_sents, summaries_sents)),
-                         total=SAMPLE_SIZE)
+                         total=actual_n)
     ]
     pos_rate = np.mean([sum(lbl) / max(len(lbl), 1) for lbl in oracle_labels])
     print(f'      mean positive rate per doc: {pos_rate:.3f}')
@@ -206,7 +208,7 @@ def main():
         'train_idx':       train_idx,
         'val_idx':         val_idx,
         'test_idx':        test_idx,
-        'sample_size':     SAMPLE_SIZE,
+        'sample_size':     actual_n,
         'max_sents':       MAX_SENTS,
         'seed':            SEED,
         'source_dataset':  'cnn_dailymail/3.0.0',
@@ -229,7 +231,7 @@ def main():
     for i, s in enumerate(reloaded['summaries_sents'][doc_id]):
         print(f'  S{i}: {s}')
 
-    print('\n[done] Day 1 complete.')
+    print('\n[done] Data Part is completed.')
 
 
 if __name__ == '__main__':
