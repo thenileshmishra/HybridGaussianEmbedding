@@ -112,6 +112,11 @@ def main():
                         help='Must match the sample_size used in data.py')
     parser.add_argument('--eval_only',   action='store_true',
                         help='Skip training, load best checkpoint and run test eval only')
+    parser.add_argument('--paracnn_strict', action='store_true',
+                        help='Match the notebook EXACTLY (per-doc optimizer.step, '
+                             'inter_encoder excluded from optimizer, '
+                             'gradient clip only on RoBERTa params). '
+                             'Reproduces the original notebook including its known bugs.')
     # ParaCNN Gaussian hyperparameters (override variant defaults if provided)
     parser.add_argument('--s_max', type=float, default=None)
     parser.add_argument('--s_min', type=float, default=None)
@@ -173,10 +178,22 @@ def main():
     print(f'Model: paracnn  trainable params: {n_params/1e6:.1f}M')
 
     # ---- Optimizer / scheduler / loss (matches notebook) ----
-    optimizer = AdamW(model.parameters(), lr=args.lr,
-                      betas=(0.9, 0.999), weight_decay=1e-2)
+    if args.paracnn_strict:
+        # Notebook excludes inter_encoder from the optimizer (a bug in the original).
+        # Only RoBERTa wrapper + logit head are trained; inter_encoder stays frozen at random init.
+        optim_params = list(model.embedder.parameters()) \
+                     + list(model.roberta.parameters()) \
+                     + list(model.logit_layer.parameters())
+        clip_params = list(model.roberta.parameters())   # notebook clips only RoBERTa
+    else:
+        optim_params = list(model.parameters())
+        clip_params  = list(model.parameters())
+    optimizer = AdamW(optim_params, lr=args.lr, betas=(0.9, 0.999), weight_decay=1e-2)
     scheduler = StepLR(optimizer, step_size=2, gamma=0.9)
     loss_fn = nn.BCEWithLogitsLoss()
+    print(f'Optimizer: {len(optim_params)} param tensors  '
+          f'(strict={args.paracnn_strict}, inter_encoder '
+          f'{"excluded" if args.paracnn_strict else "included"})')
 
     # ---- Paths ----
     project_root = os.path.dirname(save_dir)
@@ -209,7 +226,8 @@ def main():
                         desc=f'Epoch {epoch}/{args.epochs}')
             for start in pbar:
                 batch_order = order[start:start + args.batch_size]
-                optimizer.zero_grad()
+                if not args.paracnn_strict:
+                    optimizer.zero_grad()
                 batch_loss_total = 0.0
                 n_in_batch = 0
                 for j in batch_order:
@@ -223,13 +241,21 @@ def main():
                     target = torch.tensor(lbls[:n_fit], dtype=torch.float,
                                           device=device).unsqueeze(0)
                     raw = loss_fn(logits, target)
-                    (raw / max(len(batch_order), 1)).backward()
+                    if args.paracnn_strict:
+                        # Notebook: optimizer.step() PER DOCUMENT (effective batch_size=1).
+                        optimizer.zero_grad()
+                        raw.backward()
+                        torch.nn.utils.clip_grad_norm_(clip_params, 1.0)
+                        optimizer.step()
+                    else:
+                        (raw / max(len(batch_order), 1)).backward()
                     batch_loss_total += raw.item()
                     n_in_batch += 1
 
                 if n_in_batch > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    optimizer.step()
+                    if not args.paracnn_strict:
+                        torch.nn.utils.clip_grad_norm_(clip_params, 1.0)
+                        optimizer.step()
                     train_losses.append(batch_loss_total / n_in_batch)
                     pbar.set_postfix(loss=f'{train_losses[-1]:.4f}')
 
