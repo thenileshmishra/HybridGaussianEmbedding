@@ -12,11 +12,22 @@ Gaussian formula:  G(i) = exp( -(i_norm - mu)^2 / (2*sigma^2) )
 Applied as:        cls_h[i] += alpha * G(i)        for G1/G2
                    cls_h[i] += G(i) * w             for G3/G4
 where i_norm = i / (N-1), normalized to [0, 1].
+
+Sigma parameterization for G2/G4:
+    Stored as raw_sigma; effective sigma = softplus(raw_sigma) + _MIN_SIGMA
+    This prevents sigma from collapsing to zero at large-scale training.
+    _MIN_SIGMA=0.05 keeps the Gaussian spread over at least 1/20 of the doc.
+    raw_sigma is initialized to -1.82 so that effective sigma ≈ 0.20 at start.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoModel
+
+_MIN_SIGMA = 0.05
+# softplus(-1.82) + 0.05 ≈ 0.147 + 0.05 = 0.197 ≈ 0.20
+_INIT_RAW_SIGMA = -1.82
 
 
 def sinusoidal_pe(max_len, d, n=10000.0):
@@ -40,17 +51,23 @@ class GaussianBias(nn.Module):
             self.register_buffer('sigma', torch.tensor(0.2))
             self.register_buffer('alpha', torch.tensor(1.0))
         elif variant == 'G2':
-            self.mu    = nn.Parameter(torch.tensor(0.5))
-            self.sigma = nn.Parameter(torch.tensor(0.2))
-            self.alpha = nn.Parameter(torch.tensor(1.0))
+            self.mu        = nn.Parameter(torch.tensor(0.5))
+            self.raw_sigma = nn.Parameter(torch.tensor(_INIT_RAW_SIGMA))
+            self.alpha     = nn.Parameter(torch.tensor(1.0))
         elif variant == 'G3':
             self.register_buffer('mu',    torch.tensor(0.5))
             self.register_buffer('sigma', torch.tensor(0.2))
             self.w = nn.Parameter(torch.zeros(d))
         elif variant == 'G4':
-            self.mu    = nn.Parameter(torch.tensor(0.5))
-            self.sigma = nn.Parameter(torch.tensor(0.2))
-            self.w = nn.Parameter(torch.zeros(d))
+            self.mu        = nn.Parameter(torch.tensor(0.5))
+            self.raw_sigma = nn.Parameter(torch.tensor(_INIT_RAW_SIGMA))
+            self.w         = nn.Parameter(torch.zeros(d))
+
+    def _effective_sigma(self):
+        """Effective sigma: softplus(raw_sigma)+_MIN_SIGMA for learnable variants, buffer for fixed."""
+        if hasattr(self, 'raw_sigma'):
+            return F.softplus(self.raw_sigma) + _MIN_SIGMA
+        return self.sigma
 
     def forward(self, cls_h, cls_mask):
         """
@@ -66,7 +83,7 @@ class GaussianBias(nn.Module):
         B, N, d = cls_h.shape
         positions = torch.arange(N, device=cls_h.device).float() / max(N - 1, 1)  # (N,)
         mu    = self.mu.clamp(0.01, 0.99)
-        sigma = self.sigma.abs().clamp(0.01, 1.0)
+        sigma = self._effective_sigma()
 
         gauss = torch.exp(-((positions - mu) ** 2) / (2 * sigma ** 2))  # (N,)
         gauss = gauss.unsqueeze(0) * cls_mask                            # (B, N)
@@ -79,10 +96,10 @@ class GaussianBias(nn.Module):
         return cls_h + bias
 
     def log_params(self):
-        """Current parameter values for console logging."""
+        """Current parameter values for console logging (sigma shown as effective value)."""
         if self.variant == 'G0':
             return {}
-        out = {'mu': self.mu.item(), 'sigma': self.sigma.item()}
+        out = {'mu': self.mu.item(), 'sigma': self._effective_sigma().item()}
         if self.variant in ('G1', 'G2'):
             out['alpha'] = self.alpha.item()
         else:
